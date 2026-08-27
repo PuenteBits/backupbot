@@ -3,3 +3,6 @@ data/
 backups/
 *.log
 .DS_Store
+
+# Local compose overrides (host paths, TZ)
+.env

@@ -70,10 +70,14 @@ and let your laptop's key do the authenticating — nothing to install on DSM.
 ```bash
 git clone git@github.com:PuenteBits/backupbot.git /volume1/docker/backupbot/src
 cd /volume1/docker/backupbot/src
-# Edit docker/docker-compose.yml: set TZ and check the volume paths.
+cp docker/.env.example docker/.env   # set your shared folder paths and TZ
 docker compose -f docker/docker-compose.yml up -d --build
 docker compose -f docker/docker-compose.yml logs -f
 ```
+
+Host paths live in `docker/.env` rather than the compose file, because shared
+folder names differ per NAS — `/volume1/backups` on one, `/volume1/photos-backups`
+on another. It is gitignored, so your paths survive a `git pull`.
 
 The startup log prints the generated API token. Set `BACKUPBOT_TOKEN` in the
 compose file to pin your own instead.
