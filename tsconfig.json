@@ -1,0 +1,22 @@
+{
+  "compilerOptions": {
+    "lib": ["ESNext"],
+    "target": "ESNext",
+    "module": "Preserve",
+    "moduleResolution": "bundler",
+    "types": ["bun"],
+    "jsx": "react-jsx",
+    "jsxImportSource": "@opentui/react",
+    "allowImportingTsExtensions": true,
+    "noEmit": true,
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "skipLibCheck": true,
+    "paths": {
+      "@backupbot/core": ["./packages/core/src/index.ts"],
+      "@backupbot/core/*": ["./packages/core/src/*"],
+      "@backupbot/engine/*": ["./packages/engine/src/*"]
+    }
+  },
+  "exclude": ["node_modules", "data"]
+}

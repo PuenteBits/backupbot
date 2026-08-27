@@ -1,0 +1,26 @@
+services:
+  backupbot:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: backupbot:latest
+    container_name: backupbot
+    restart: unless-stopped
+    environment:
+      # Where the scheduler evaluates cron expressions that say "UTC" is wrong.
+      TZ: Europe/Madrid
+      # Bound to loopback on the host: reach the API over an SSH tunnel
+      # (ssh -L 7817:localhost:7817 nas) rather than exposing it on the LAN.
+      BACKUPBOT_HOST: 0.0.0.0
+      # Uncomment to enable opt-in restore verification. This grants the
+      # container root-equivalent control of the host Docker daemon.
+      # BACKUPBOT_ALLOW_DOCKER: "1"
+    ports:
+      - "127.0.0.1:7817:7817"
+    volumes:
+      # SQLite state, encryption key and run logs.
+      - /volume1/docker/backupbot/data:/data
+      # The dumps themselves — point Hyper Backup at this folder for offsite.
+      - /volume1/backups/databases:/backups
+      # Required only when BACKUPBOT_ALLOW_DOCKER=1 is set above.
+      # - /var/run/docker.sock:/var/run/docker.sock

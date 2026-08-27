@@ -1,0 +1,18 @@
+{
+  "name": "@backupbot/tui",
+  "version": "0.1.0",
+  "type": "module",
+  "bin": {
+    "backupbot-tui": "./src/index.tsx"
+  },
+  "dependencies": {
+    "@backupbot/core": "workspace:*",
+    "@opentui/core": "^0.5.8",
+    "@opentui/react": "^0.5.8",
+    "react": "^19.2.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.0",
+    "@backupbot/engine": "workspace:*"
+  }
+}

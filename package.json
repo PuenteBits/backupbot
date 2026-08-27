@@ -1,0 +1,19 @@
+{
+  "name": "backupbot",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "engine": "bun run packages/engine/src/index.ts",
+    "cli": "bun run packages/cli/src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "tui": "bun run packages/tui/src/index.tsx"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.7.0"
+  }
+}

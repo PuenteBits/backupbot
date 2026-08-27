@@ -1,0 +1,10 @@
+{
+  "name": "@backupbot/cli",
+  "version": "0.1.0",
+  "type": "module",
+  "bin": { "backupbot": "./src/index.ts" },
+  "dependencies": {
+    "@backupbot/core": "workspace:*",
+    "@backupbot/engine": "workspace:*"
+  }
+}
