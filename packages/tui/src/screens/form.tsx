@@ -1,6 +1,16 @@
 import { useMemo, useState } from "react";
 import { useKeyboard } from "@opentui/react";
-import { nextRunAt, retentionSchema, SCHEDULE_PRESETS, VERIFY_MODES, type Engine, type VerifyMode } from "@backupbot/core";
+import {
+  guideForDsn,
+  nextRunAt,
+  PROVIDER_GUIDES,
+  retentionSchema,
+  SCHEDULE_PRESETS,
+  VERIFY_MODES,
+  type Engine,
+  type ProviderGuide,
+  type VerifyMode,
+} from "@backupbot/core";
 import type { ConnectionCheck, TargetPayload, TargetView } from "../api";
 import { Panel, type Hint } from "../components/ui";
 import { theme } from "../theme";
@@ -9,6 +19,7 @@ export const FORM_HINTS: Hint[] = [
   { key: "tab", label: "next field" },
   { key: "←→", label: "change option" },
   { key: "^p", label: "schedule preset" },
+  { key: "^g", label: "connection guide" },
   { key: "^t", label: "test connection" },
   { key: "^s", label: "save" },
   { key: "esc", label: "cancel" },
@@ -99,6 +110,8 @@ export function TargetForm(props: TargetFormProps) {
   const editing = Boolean(target);
   const [focus, setFocus] = useState(0);
   const [presetIndex, setPresetIndex] = useState(0);
+  // -1 is closed; otherwise an index into PROVIDER_GUIDES.
+  const [guideIndex, setGuideIndex] = useState(-1);
 
   const fields: FieldSpec[] = useMemo(
     () => [
@@ -126,7 +139,22 @@ export function TargetForm(props: TargetFormProps) {
 
     if (event.name === "escape") return props.onCancel();
     if (event.ctrl && event.name === "s") return props.onSave();
-    if (event.ctrl && event.name === "t") return props.onTest(state.dsn.trim());
+    if (event.ctrl && event.name === "g") {
+      // Opens on whichever provider the half-typed DSN looks like, then cycles
+      // through the rest and closes — so one key both reveals and dismisses it.
+      return setGuideIndex((current) => {
+        if (current >= 0) return current + 1 >= PROVIDER_GUIDES.length ? -1 : current + 1;
+        // Editing leaves the field blank, so fall back to the masked DSN —
+        // the host survives masking, and the host is all the detection needs.
+        const detected = guideForDsn(state.dsn || target?.dsnMasked || "");
+        return detected ? PROVIDER_GUIDES.indexOf(detected) : 0;
+      });
+    }
+    if (event.ctrl && event.name === "t") {
+      // The result belongs in the space the guide is occupying.
+      setGuideIndex(-1);
+      return props.onTest(state.dsn.trim());
+    }
     if (event.ctrl && event.name === "p") {
       const preset = SCHEDULE_PRESETS[presetIndex % SCHEDULE_PRESETS.length]!;
       setPresetIndex((index) => index + 1);
@@ -172,7 +200,11 @@ export function TargetForm(props: TargetFormProps) {
           </span>
         </text>
       </Panel>
-      <ConnectionPanel check={props.check} testing={props.testing} />
+      {guideIndex >= 0 ? (
+        <GuidePanel guide={PROVIDER_GUIDES[guideIndex]!} />
+      ) : (
+        <ConnectionPanel check={props.check} testing={props.testing} />
+      )}
     </box>
   );
 }
@@ -227,6 +259,61 @@ function verifyHint(mode: string): string {
     default:
       return "reads the archive index to prove it is complete";
   }
+}
+
+/**
+ * A marker in its own column so that a line long enough to wrap — which these
+ * are on a narrow terminal — indents under its text instead of restarting at
+ * the left edge, where it would read as a new bullet.
+ */
+function GuideLine({
+  marker,
+  markerColor,
+  textColor,
+  text,
+}: {
+  marker: string;
+  markerColor: string;
+  textColor: string;
+  text: string;
+}) {
+  return (
+    <box flexDirection="row">
+      <text width={3} flexShrink={0}>
+        <span fg={markerColor}>{marker}</span>
+      </text>
+      <text flexGrow={1}>
+        <span fg={textColor}>{text}</span>
+      </text>
+    </box>
+  );
+}
+
+/**
+ * Provider-specific instructions, shown where the connection result goes. The
+ * hard part of adding a target is knowing which of a provider's several
+ * connection strings can serve a dump, and that answer is not in the form.
+ */
+function GuidePanel({ guide }: { guide: ProviderGuide }) {
+  return (
+    <Panel title={`${guide.name.toLowerCase()} — where to find the connection string`}>
+      {guide.steps.map((step, i) => (
+        <GuideLine key={`step-${i}`} marker={`${i + 1}.`} markerColor={theme.accent} textColor={theme.text} text={step} />
+      ))}
+      <text>{""}</text>
+      {guide.pitfalls.map((pitfall, i) => (
+        <GuideLine key={`pitfall-${i}`} marker="!" markerColor={theme.warn} textColor={theme.muted} text={pitfall} />
+      ))}
+      <text>{""}</text>
+      <text>
+        <span fg={theme.muted}>{"example  "}</span>
+        <span fg={theme.text}>{guide.example}</span>
+      </text>
+      <text>
+        <span fg={theme.muted}>{"^g again for the next provider, or to close"}</span>
+      </text>
+    </Panel>
+  );
 }
 
 function ConnectionPanel({ check, testing }: { check: ConnectionCheck | null; testing: boolean }) {

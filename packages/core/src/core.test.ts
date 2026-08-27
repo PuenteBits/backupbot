@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { randomBytes } from "node:crypto";
 import { SecretBox } from "./crypto";
 import { inspectDsn, maskDsn, parseDsn } from "./dsn";
+import { guideForDsn, guideForHost, PROVIDER_GUIDES } from "./providers";
 import { redact } from "./redact";
 import { slugify } from "./schema";
 
@@ -78,6 +79,40 @@ describe("inspectDsn", () => {
   test("warns about IPv6-only Supabase direct connections", () => {
     const warnings = inspectDsn(parseDsn("postgres://u:p@db.abcdefgh.supabase.co:5432/postgres"));
     expect(warnings.some((w) => /IPv6/.test(w.message))).toBe(true);
+  });
+
+  test("flags Railway's internal host, which a NAS can never resolve", () => {
+    const warnings = inspectDsn(parseDsn("postgres://u:p@postgres.railway.internal:5432/railway"));
+    expect(warnings.some((w) => w.level === "error" && /DATABASE_PUBLIC_URL/.test(w.message))).toBe(true);
+  });
+
+  test("accepts Railway's public proxy without an error", () => {
+    const warnings = inspectDsn(parseDsn("postgres://u:p@ballast.proxy.rlwy.net:41234/railway?sslmode=require"));
+    expect(warnings.filter((w) => w.level === "error")).toHaveLength(0);
+  });
+});
+
+describe("provider guides", () => {
+  test("every guide's own example resolves back to that guide", () => {
+    for (const guide of PROVIDER_GUIDES) {
+      expect(guideForDsn(guide.example)?.id).toBe(guide.id);
+    }
+  });
+
+  test("recognises the hosts each provider actually hands out", () => {
+    expect(guideForHost("aws-0-eu-west-1.pooler.supabase.com")?.id).toBe("supabase");
+    expect(guideForHost("db.abcdefgh.supabase.co")?.id).toBe("supabase");
+    expect(guideForHost("ballast.proxy.rlwy.net")?.id).toBe("railway");
+    expect(guideForHost("postgres.railway.internal")?.id).toBe("railway");
+    expect(guideForHost("shop.example.com")).toBeUndefined();
+  });
+
+  test("matches a half-typed connection string without throwing", () => {
+    // The add form calls this on every keystroke, long before the DSN parses.
+    expect(guideForDsn("postgres://postgres.abc:pw@aws-0-eu-west-1.pooler.supa")).toBeUndefined();
+    expect(guideForDsn("postgresql://u@ballast.proxy.rlwy.net")?.id).toBe("railway");
+    expect(guideForDsn("")).toBeUndefined();
+    expect(guideForDsn("not a url at all")).toBeUndefined();
   });
 });
 

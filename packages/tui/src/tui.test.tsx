@@ -189,6 +189,52 @@ describe("TUI", () => {
     // which the list, detail and log assertions cover.
   }, 60_000);
 
+  test("^g opens the provider guide, cycles providers, then closes", async () => {
+    const setup = await mount();
+    const { mockInput, captureCharFrame } = setup;
+
+    mockInput.pressKey("a");
+    await until(setup, (frame) => frame.includes("add target"));
+    expect(captureCharFrame()).toContain("^g connection guide");
+
+    mockInput.pressKey("g", { ctrl: true });
+    await until(setup, (frame) => frame.includes("supabase — where to find"));
+    const supabase = captureCharFrame();
+    expect(supabase).toContain("Session pooler");
+    expect(supabase).toContain("6543");
+
+    mockInput.pressKey("g", { ctrl: true });
+    await until(setup, (frame) => frame.includes("DATABASE_PUBLIC_URL"));
+    expect(captureCharFrame()).toContain("railway — where to find");
+
+    mockInput.pressKey("g", { ctrl: true });
+    await until(setup, (frame) => frame.includes("Press ^t to test"));
+    expect(captureCharFrame()).not.toContain("DATABASE_PUBLIC_URL");
+
+    mockInput.pressEscape();
+    await until(setup, (frame) => frame.includes("targets (1)"));
+  });
+
+  test("^g opens on the provider the typed connection string belongs to", async () => {
+    const setup = await mount();
+    const { mockInput, captureCharFrame } = setup;
+
+    mockInput.pressKey("a");
+    await until(setup, (frame) => frame.includes("add target"));
+    mockInput.pressTab(); // Name -> Connection
+    await settle(setup);
+    await mockInput.typeText("postgres://u:pw@ballast.proxy.rlwy.net:41234/railway");
+    await settle(setup);
+
+    // Skips Supabase, which is first in the list, because the host is Railway's.
+    mockInput.pressKey("g", { ctrl: true });
+    await until(setup, (frame) => frame.includes("DATABASE_PUBLIC_URL"));
+    expect(captureCharFrame()).toContain("railway — where to find");
+
+    mockInput.pressEscape();
+    await until(setup, (frame) => frame.includes("targets (1)"));
+  });
+
   test("d asks before deleting and n keeps the target", async () => {
     const setup = await mount();
     const { mockInput, captureCharFrame } = setup;

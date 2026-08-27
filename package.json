@@ -10,7 +10,8 @@
     "cli": "bun run packages/cli/src/index.ts",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
-    "tui": "bun run packages/tui/src/index.tsx"
+    "tui": "bun run packages/tui/src/index.tsx",
+    "tui:remote": "bun run packages/tui/src/remote.ts"
   },
   "devDependencies": {
     "@types/bun": "latest",

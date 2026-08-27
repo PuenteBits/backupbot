@@ -91,16 +91,43 @@ The API binds to loopback on the NAS. Tunnel in rather than exposing a backup
 control plane on your LAN:
 
 ```bash
-ssh -L 7817:localhost:7817 nas
-curl -H "Authorization: Bearer $TOKEN" localhost:7817/api/targets
+ssh -L 7817:127.0.0.1:7817 nas
+curl -H "Authorization: Bearer $TOKEN" 127.0.0.1:7817/api/targets
+```
+
+Two DSM-specific traps here:
+
+- **DSM ships with `AllowTcpForwarding no`**, so the tunnel is refused with
+  `administratively prohibited: open failed`. Set it to `yes` in
+  `/etc/ssh/sshd_config` and `sudo synosystemctl restart sshd`. A DSM update can
+  revert the file, so check it first if tunnelling stops working.
+- **Forward to `127.0.0.1`, not `localhost`.** The NAS resolves `localhost` to
+  `::1` first, and the engine binds IPv4 loopback only — the connection is
+  accepted locally and then reset.
+
+Without forwarding, run the TUI on the NAS instead:
+
+```bash
+sudo docker exec -it backupbot bun run /app/packages/tui/src/index.tsx
 ```
 
 ## The TUI
 
 ```bash
-bun run tui                                   # from a checkout
-docker exec -it backupbot bun run /app/packages/tui/src/index.tsx   # on the NAS
+bun run tui:remote nas                      # from a laptop, over a tunnel
+bun run tui                                   # against a local engine
+sudo docker exec -it backupbot bun run /app/packages/tui/src/index.tsx  # on the NAS
 ```
+
+`tui:remote <ssh-host>` is the laptop path. It opens the SSH forward on an
+ephemeral local port, reads the API token off the NAS, runs the TUI, and closes
+the tunnel when the TUI exits — including on ctrl-c, a crash, or `kill -9`.
+Nothing is left listening and no token is written to your machine. The host is
+whatever you type after `ssh`, so an `~/.ssh/config` alias works.
+
+Override `BACKUPBOT_REMOTE_DB` if the engine's data directory is not the
+documented `/volume1/docker/backupbot/data`, or set `BACKUPBOT_TOKEN` to skip
+reading it from the NAS.
 
 It reads `BACKUPBOT_URL` / `BACKUPBOT_TOKEN`, falls back to
 `~/.config/backupbot/tui.json`, and finally reads the token straight out of the
@@ -127,7 +154,7 @@ setup at all.
 | Screen | Keys |
 |---|---|
 | Targets | `↑↓`/`jk` move · `⏎` history · `r` run now · `a` add · `e` edit · `t` test connection · `space` enable/disable · `d` delete · `q` quit |
-| Add/edit | `tab` next field · `←→` change option · `^p` cycle schedule presets · `^t` test connection · `^s` save · `esc` cancel |
+| Add/edit | `tab` next field · `←→` change option · `^p` cycle schedule presets · `^g` provider connection guide · `^t` test connection · `^s` save · `esc` cancel |
 | History | `tab` switch pane · `↑↓` move · `⏎` open log / show restore command · `r` run now · `esc` back |
 | Live run | `esc` back · `c` cancel the run |
 
@@ -139,7 +166,7 @@ the API only ever hands back a masked DSN, so blank means "keep the stored one".
 ## Adding a target
 
 ```bash
-docker exec backupbot bun run /app/packages/cli/src/index.ts \
+sudo docker exec backupbot bun run /app/packages/cli/src/index.ts \
   add --name "Shop production" \
       --dsn 'postgres://postgres.abcdefgh:PASSWORD@aws-0-eu-west-1.pooler.supabase.com:5432/postgres' \
       --schedule '0 3 * * *' --tz Europe/Madrid \
@@ -149,21 +176,52 @@ docker exec backupbot bun run /app/packages/cli/src/index.ts \
 Percent-encode anything exotic in the password: `@` → `%40`, `:` → `%3A`,
 `/` → `%2F`.
 
+Every provider hands out several connection strings and only some of them can
+serve a dump. Picking the wrong one usually fails later, on a schedule, rather
+than when you paste it — so the steps below are also built into the TUI: press
+**`^g`** in the add/edit form to read them next to the field, and `^g` again to
+cycle providers or close.
+
 ### Supabase
 
-Use the **session pooler** connection string from Project Settings → Database:
+1. Open your project and click **Connect** in the top bar (or Project Settings →
+   Database).
+2. Choose the **Session pooler** tab — not Transaction pooler, not Direct
+   connection.
+3. Copy the URI. The host ends in `.pooler.supabase.com` and the port is `5432`.
+4. Replace `[YOUR-PASSWORD]` with the database password (Settings → Database →
+   Reset database password if you never saved it — it is *not* your Supabase
+   account password).
+5. Percent-encode any `@ : / ? #` in the password.
 
-- `…pooler.supabase.com:5432` ✅ — IPv4, works with `pg_dump`
+```
+postgresql://postgres.abcdefghijklmnop:PASSWORD@aws-0-eu-west-1.pooler.supabase.com:5432/postgres
+```
+
+- `…pooler.supabase.com:5432` ✅ — session pooler, IPv4, works with `pg_dump`
 - `…pooler.supabase.com:6543` ❌ — transaction pooler, cannot serve `pg_dump`
 - `db.<ref>.supabase.co:5432` ⚠️ — direct, IPv6-only without the paid IPv4 add-on
 
-`backupbot test` and `add` flag all three cases before you find out at 3am.
-
 ### Railway
 
-Use the public `DATABASE_URL` from the service's Variables tab (the
-`*.proxy.rlwy.net` host). The internal `*.railway.internal` host only resolves
-inside Railway's network.
+1. Open the project and click the **Postgres** (or MySQL) service — not the app
+   service.
+2. Go to the **Variables** tab.
+3. Copy **`DATABASE_PUBLIC_URL`**. For MySQL the variable is `MYSQL_PUBLIC_URL`.
+4. Check the host ends in `.proxy.rlwy.net` with a high random port.
+5. Percent-encode any `@ : / ? #` in the password.
+
+```
+postgresql://postgres:PASSWORD@ballast.proxy.rlwy.net:41234/railway
+```
+
+`DATABASE_URL` — without the `_PUBLIC_` — points at `*.railway.internal`, which
+only resolves inside Railway's own network; nothing on your NAS can reach it.
+The public proxy port is assigned per service and changes if you re-provision
+the database, and dumps pulled through it count toward Railway's billed egress.
+
+`backupbot test` and `add` flag the unusable choices for both providers before
+you find out at 3am.
 
 ## Retention
 
@@ -191,7 +249,8 @@ should be a decision you make with the command in front of you.
 
 ## CLI
 
-Run inside the container (`docker exec backupbot bun run /app/packages/cli/src/index.ts …`)
+Run inside the container (`sudo docker exec backupbot bun run /app/packages/cli/src/index.ts …`)
+— on DSM the docker socket is root-only, so the `sudo` is not optional
 or locally with `bun run packages/cli/src/index.ts …`.
 
 ```

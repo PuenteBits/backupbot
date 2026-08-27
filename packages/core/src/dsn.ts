@@ -81,6 +81,13 @@ export function inspectDsn(parsed: ParsedDsn): DsnWarning[] {
         "Supabase direct connections are IPv6-only without the IPv4 add-on. If your network is IPv4-only, use the session pooler host instead.",
     });
   }
+  if (host.endsWith(".railway.internal")) {
+    warnings.push({
+      level: "error",
+      message:
+        "Railway's *.railway.internal host only resolves inside Railway's network. Use DATABASE_PUBLIC_URL (*.proxy.rlwy.net) instead.",
+    });
+  }
   if (!parsed.password) {
     warnings.push({ level: "warn", message: "No password in the connection string." });
   }

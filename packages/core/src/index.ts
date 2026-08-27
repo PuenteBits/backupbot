@@ -2,6 +2,7 @@ export * from "./schema";
 export * from "./paths";
 export * from "./crypto";
 export * from "./dsn";
+export * from "./providers";
 export * from "./redact";
 export * from "./db";
 export * from "./store";
