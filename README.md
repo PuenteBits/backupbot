@@ -64,8 +64,11 @@ broken backup can never age out working ones.
 
 Requires DSM with Container Manager (x86_64 models).
 
+The repo is private, so SSH into the NAS with agent forwarding (`ssh -A nas`)
+and let your laptop's key do the authenticating — nothing to install on DSM.
+
 ```bash
-git clone <this repo> /volume1/docker/backupbot/src
+git clone git@github.com:PuenteBits/backupbot.git /volume1/docker/backupbot/src
 cd /volume1/docker/backupbot/src
 # Edit docker/docker-compose.yml: set TZ and check the volume paths.
 docker compose -f docker/docker-compose.yml up -d --build
