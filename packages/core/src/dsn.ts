@@ -91,6 +91,13 @@ export function inspectDsn(parsed: ParsedDsn): DsnWarning[] {
   if (!parsed.password) {
     warnings.push({ level: "warn", message: "No password in the connection string." });
   }
+  if (engine === "mysql" && !parsed.params["ssl-mode"] && !isLocal(host)) {
+    warnings.push({
+      level: "warn",
+      message:
+        "No ssl-mode set for a remote host; defaulting to ssl-mode=REQUIRED (encrypted, certificate not verified). Managed MySQL behind a proxy presents a self-signed certificate.",
+    });
+  }
   if (engine === "postgres" && !parsed.params.sslmode && !isLocal(host)) {
     warnings.push({
       level: "warn",

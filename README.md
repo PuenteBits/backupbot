@@ -75,6 +75,18 @@ docker compose -f docker/docker-compose.yml up -d --build
 docker compose -f docker/docker-compose.yml logs -f
 ```
 
+### Updating a deployment
+
+```bash
+./redeploy.sh nas          # pull main on the NAS and rebuild
+./redeploy.sh nas --force  # rebuild even with nothing new to pull
+```
+
+It refuses to pull over a dirty checkout, shows the incoming commits, rebuilds,
+and waits for `/health` before reporting success. It needs `ssh -A` for the
+private repo and `ssh -t` so `sudo` can prompt — both of which it sets itself,
+so run it from a real terminal rather than a script.
+
 Host paths live in `docker/.env` rather than the compose file, because shared
 folder names differ per NAS — `/volume1/backups` on one, `/volume1/photos-backups`
 on another. It is gitignored, so your paths survive a `git pull`.
@@ -114,16 +126,21 @@ sudo docker exec -it backupbot bun run /app/packages/tui/src/index.tsx
 ## The TUI
 
 ```bash
-bun run tui:remote nas                      # from a laptop, over a tunnel
-bun run tui                                   # against a local engine
+./run.sh nas                                # from a laptop, over a tunnel
+./run.sh --local                              # against an engine on this machine
 sudo docker exec -it backupbot bun run /app/packages/tui/src/index.tsx  # on the NAS
 ```
 
-`tui:remote <ssh-host>` is the laptop path. It opens the SSH forward on an
-ephemeral local port, reads the API token off the NAS, runs the TUI, and closes
-the tunnel when the TUI exits — including on ctrl-c, a crash, or `kill -9`.
-Nothing is left listening and no token is written to your machine. The host is
-whatever you type after `ssh`, so an `~/.ssh/config` alias works.
+`./run.sh <ssh-host>` is the laptop path. It installs dependencies if the
+checkout is fresh, opens an SSH forward on an ephemeral local port, reads the
+API token off the NAS, runs the TUI, and closes the tunnel when the TUI exits —
+including on ctrl-c, a crash, or `kill -9`. Nothing is left listening and no
+token is written to your machine. The host is whatever you type after `ssh`, so
+an `~/.ssh/config` alias works.
+
+The same launcher is available as `bun run tui:remote <ssh-host>`, with one
+caveat: `bun run <script-name>` spawns a child, so a `kill -9` on *that* wrapper
+leaves the tunnel behind. `./run.sh` execs the launcher directly and does not.
 
 Override `BACKUPBOT_REMOTE_DB` if the engine's data directory is not the
 documented `/volume1/docker/backupbot/data`, or set `BACKUPBOT_TOKEN` to skip
@@ -214,6 +231,14 @@ postgresql://postgres.abcdefghijklmnop:PASSWORD@aws-0-eu-west-1.pooler.supabase.
 ```
 postgresql://postgres:PASSWORD@ballast.proxy.rlwy.net:41234/railway
 ```
+
+Railway's MySQL terminates TLS with a self-signed certificate, and the MariaDB
+client verifies certificates by default — so a bare connection string fails with
+`TLS/SSL error: self-signed certificate in certificate chain`. Remote MySQL
+therefore defaults to `ssl-mode=REQUIRED`: encrypted, certificate not verified,
+the same trade the Postgres side makes with `sslmode=require`. Override per
+target with `?ssl-mode=…` (`DISABLED`, `PREFERRED`, `REQUIRED`, `VERIFY_CA`,
+`VERIFY_IDENTITY`), adding `&ssl-ca=/path/to/ca.pem` for the verifying modes.
 
 `DATABASE_URL` — without the `_PUBLIC_` — points at `*.railway.internal`, which
 only resolves inside Railway's own network; nothing on your NAS can reach it.

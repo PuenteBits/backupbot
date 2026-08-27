@@ -1,11 +1,56 @@
 import { unlinkSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
-import type { ParsedDsn } from "@backupbot/core";
+import { isLocal, type ParsedDsn } from "@backupbot/core";
 import { execOrThrow } from "../exec";
 import { mysqlClientBinary, mysqlDumpBinary, pickCompressor } from "../tools";
 import { verifyByRestore } from "../verify-restore";
 import type { Adapter, ConnectionCheck, DumpResult, JobContext, Redactor, VerifyReport } from "../types";
+
+export const SSL_MODES = ["DISABLED", "PREFERRED", "REQUIRED", "VERIFY_CA", "VERIFY_IDENTITY"] as const;
+
+/**
+ * TLS settings for the defaults file.
+ *
+ * The MariaDB client has no `ssl-mode` — it has `ssl` and
+ * `ssl-verify-server-cert` — and since 11.4 it verifies certificates by
+ * default. Managed MySQL reached through a proxy (Railway, PlanetScale)
+ * presents a self-signed certificate, so the default fails with
+ * "self-signed certificate in certificate chain" before a backup can run.
+ *
+ * So we accept the portable `ssl-mode` spelling that providers and MySQL's own
+ * client use, and translate it. Absent one, a remote host gets REQUIRED —
+ * encrypted, certificate not verified — matching what the Postgres adapter
+ * already defaults to with `sslmode=require`.
+ */
+export function sslSettings(dsn: ParsedDsn): string[] {
+  const requested = (dsn.params["ssl-mode"] ?? "").trim().toUpperCase().replace(/-/g, "_");
+  if (requested && !(SSL_MODES as readonly string[]).includes(requested)) {
+    throw new Error(`unknown ssl-mode "${dsn.params["ssl-mode"]}" — expected one of ${SSL_MODES.join(", ")}`);
+  }
+  const mode = requested || (isLocal(dsn.host) ? "PREFERRED" : "REQUIRED");
+
+  const lines: string[] = [];
+  switch (mode) {
+    case "DISABLED":
+      lines.push("ssl=0");
+      break;
+    case "PREFERRED":
+      // Encrypt if the server offers it, and never fail on the certificate.
+      lines.push("ssl-verify-server-cert=0");
+      break;
+    case "REQUIRED":
+      lines.push("ssl=1", "ssl-verify-server-cert=0");
+      break;
+    case "VERIFY_CA":
+    case "VERIFY_IDENTITY":
+      // Only reachable when asked for explicitly, and only workable with a CA.
+      lines.push("ssl=1", "ssl-verify-server-cert=1");
+      break;
+  }
+  if (dsn.params["ssl-ca"]) lines.push(`ssl-ca=${dsn.params["ssl-ca"]}`);
+  return lines;
+}
 
 /**
  * MySQL clients warn (or refuse) when a password is passed on the command
@@ -21,7 +66,7 @@ async function withDefaultsFile<T>(dsn: ParsedDsn, fn: (path: string) => Promise
     `user=${dsn.user}`,
     `password=${dsn.password}`,
   ];
-  if (dsn.params["ssl-mode"]) lines.push(`ssl-mode=${dsn.params["ssl-mode"]}`);
+  lines.push(...sslSettings(dsn));
   writeFileSync(path, lines.join("\n") + "\n", { mode: 0o600 });
   try {
     return await fn(path);
