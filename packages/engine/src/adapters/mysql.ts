@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { isLocal, type ParsedDsn } from "@backupbot/core";
 import { execOrThrow } from "../exec";
-import { mysqlClientBinary, mysqlDumpBinary, pickCompressor } from "../tools";
+import { dumpSupportsOption, mysqlClientBinary, mysqlDumpBinary, pickCompressor } from "../tools";
 import { verifyByRestore } from "../verify-restore";
 import type { Adapter, ConnectionCheck, DumpResult, JobContext, Redactor, VerifyReport } from "../types";
 
@@ -129,8 +129,20 @@ export const mysqlAdapter: Adapter = {
         "--no-tablespaces", // managed providers rarely grant the PROCESS privilege
         "--default-character-set=utf8mb4",
       ];
-      // GTID metadata makes a dump un-restorable onto a fresh server; MariaDB has no such flag.
-      if (!version.isMaria) args.push("--set-gtid-purged=OFF");
+      // GTID metadata makes a dump un-restorable onto a fresh server, but only
+      // Oracle's mysqldump can suppress it. Ask the binary rather than infer it
+      // from the server: mariadb-dump against a MySQL server has no such flag
+      // and exits 7 on "unknown variable 'set-gtid-purged=OFF'".
+      if (!version.isMaria) {
+        if (await dumpSupportsOption(dumpBin, "set-gtid-purged")) {
+          args.push("--set-gtid-purged=OFF");
+        } else {
+          ctx.log(
+            `note: ${dumpBin} cannot suppress GTID metadata (--set-gtid-purged is Oracle mysqldump only); ` +
+              "restoring this dump onto a server with GTIDs enabled may need SET @@GLOBAL.GTID_PURGED cleared by hand",
+          );
+        }
+      }
       args.push(ctx.dsn.database);
 
       const dump = Bun.spawn(args, { stdout: "pipe", stderr: "pipe", signal: ctx.signal });

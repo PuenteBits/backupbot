@@ -103,8 +103,31 @@ export async function pickCompressor(): Promise<Compressor> {
   return compressorCache;
 }
 
+const dumpOptionCache = new Map<string, boolean>();
+
+/**
+ * Whether a dump binary understands an option.
+ *
+ * mariadb-dump and Oracle's mysqldump have diverged, and an option the binary
+ * does not know is a hard failure — "unknown variable", exit 7 — not a warning.
+ * Crucially it is the *client* that decides this, not the server: dumping a
+ * MySQL server with mariadb-dump still means no --set-gtid-purged.
+ */
+export async function dumpSupportsOption(bin: string, option: string): Promise<boolean> {
+  const key = `${bin}\u0000${option}`;
+  const cached = dumpOptionCache.get(key);
+  if (cached !== undefined) return cached;
+  const help = await exec([bin, "--help"]);
+  // Not \b: a hyphen counts as a word boundary, so --set-gtid would match
+  // --set-gtid-purged and report an option the binary does not have.
+  const supported = new RegExp(`--${option}(?![\\w-])`).test(`${help.stdout}\n${help.stderr}`);
+  dumpOptionCache.set(key, supported);
+  return supported;
+}
+
 export async function mysqlDumpBinary(): Promise<string> {
-  // MariaDB renamed the tools; either works against either server in practice.
+  // MariaDB renamed the tools; either connects to either server, but their
+  // option sets differ — see dumpSupportsOption.
   for (const bin of ["mariadb-dump", "mysqldump"]) {
     const path = await which(bin);
     if (path) return path;
