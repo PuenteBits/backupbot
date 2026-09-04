@@ -11,7 +11,7 @@ describe("resolveRemoteOptions", () => {
   });
 
   test("an explicit argument wins over the environment", () => {
-    expect(resolveRemoteOptions(["nas"], { BACKUPBOT_SSH_HOST: "nas" }).host).toBe("nas");
+    expect(resolveRemoteOptions(["from-argv"], { BACKUPBOT_SSH_HOST: "from-env" }).host).toBe("from-argv");
   });
 
   test("explains itself when no host is given at all", () => {
