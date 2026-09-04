@@ -1,6 +1,8 @@
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import {
+  channelConfigSchema,
+  channelInputSchema,
   createRedactor,
   getSetting,
   inspectDsn,
@@ -10,10 +12,12 @@ import {
   safeEqual,
   setSetting,
   targetInputSchema,
+  validationMessage,
   type Context,
   type Target,
 } from "@backupbot/core";
 import { adapterFor } from "./adapters";
+import type { Notifier } from "./notify";
 import { TargetBusyError, type Runner } from "./runner";
 import type { Scheduler } from "./scheduler";
 
@@ -34,9 +38,10 @@ export interface ApiDeps {
   runner: Runner;
   scheduler: Scheduler;
   token: string;
+  notifier?: Notifier;
 }
 
-export function createApi({ ctx, runner, scheduler, token }: ApiDeps): Hono {
+export function createApi({ ctx, runner, scheduler, notifier, token }: ApiDeps): Hono {
   const app = new Hono();
   const { store } = ctx;
 
@@ -193,6 +198,72 @@ export function createApi({ ctx, runner, scheduler, token }: ApiDeps): Hono {
 
   app.get("/api/schedule", (c) => c.json(scheduler.entries()));
 
+  // ---- notification channels ---------------------------------------------
+
+  const requireChannel = (id: number) => {
+    const channel = store.getChannel(id);
+    if (!channel) throw new HttpError(404, `no channel with id ${id}`);
+    return channel;
+  };
+
+  /** Env-configured channels are listed too, flagged as not editable. */
+  app.get("/api/channels", (c) => {
+    const stored = store.listChannels().map((ch) => store.toSafeChannel(ch));
+    const fromEnv = (notifier?.channels() ?? []).filter((ch) => ch.id <= 0).map((ch) => store.toSafeChannel(ch, true));
+    return c.json([...fromEnv, ...stored]);
+  });
+
+  app.post("/api/channels", async (c) => {
+    const channel = store.createChannel(channelInputSchema.parse(await c.req.json()));
+    return c.json(store.toSafeChannel(channel), 201);
+  });
+
+  app.patch("/api/channels/:id", async (c) => {
+    const existing = requireChannel(Number(c.req.param("id")));
+    const patch = channelInputSchema.partial().parse(await c.req.json());
+    return c.json(store.toSafeChannel(store.updateChannel(existing.id, patch)));
+  });
+
+  app.delete("/api/channels/:id", (c) => {
+    store.deleteChannel(requireChannel(Number(c.req.param("id"))).id);
+    return c.json({ ok: true });
+  });
+
+  const requireNotifier = (): Notifier => {
+    if (!notifier) throw new HttpError(503, "notifications are not enabled on this engine");
+    return notifier;
+  };
+
+  /** Posts a "this works" message to a saved channel. */
+  app.post("/api/channels/:id/test", async (c) => {
+    const result = await requireNotifier().deliver(requireChannel(Number(c.req.param("id"))), { kind: "test" });
+    return c.json(result, result.ok ? 200 : 502);
+  });
+
+  /** Same probe for a webhook the user is still typing into the TUI. */
+  app.post("/api/channels/test", async (c) => {
+    const body = (await c.req.json()) as { config?: unknown };
+    const config = channelConfigSchema.parse(body.config);
+    const ts = new Date().toISOString();
+    const result = await requireNotifier().deliver(
+      {
+        id: -1,
+        name: "preview",
+        kind: config.kind,
+        config,
+        events: [],
+        targets: null,
+        enabled: true,
+        lastSentAt: null,
+        lastError: null,
+        createdAt: ts,
+        updatedAt: ts,
+      },
+      { kind: "test" },
+    );
+    return c.json(result, result.ok ? 200 : 502);
+  });
+
   /** Everything the TUI dashboard header needs, in one call. */
   app.get("/api/stats", (c) => {
     const targets = store.listTargets();
@@ -212,6 +283,8 @@ export function createApi({ ctx, runner, scheduler, token }: ApiDeps): Hono {
 
   app.onError((err, c) => {
     if (err instanceof HttpError) return c.json({ error: err.message }, err.status as 400);
+    const invalid = validationMessage(err);
+    if (invalid) return c.json({ error: invalid }, 400);
     return c.json({ error: err.message }, 500);
   });
 

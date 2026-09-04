@@ -2,10 +2,18 @@ import type { Database } from "bun:sqlite";
 import type { SecretBox } from "./crypto";
 import { maskDsn } from "./dsn";
 import {
+  channelConfigSchema,
+  channelInputSchema,
   DEFAULT_RETENTION,
+  maskChannelConfig,
   slugify,
   targetInputSchema,
   type Artifact,
+  type Channel,
+  type ChannelInput,
+  type ChannelKind,
+  type NotifyEventKind,
+  type SafeChannel,
   type Engine,
   type Retention,
   type Run,
@@ -43,6 +51,20 @@ interface RunRow {
   bytes: number | null;
   error: string | null;
   log_path: string | null;
+}
+
+interface ChannelRow {
+  id: number;
+  name: string;
+  kind: string;
+  config_enc: string;
+  events: string;
+  targets: string | null;
+  enabled: number;
+  last_sent_at: string | null;
+  last_error: string | null;
+  created_at: string;
+  updated_at: string;
 }
 
 interface ArtifactRow {
@@ -233,6 +255,96 @@ export class Store {
 
   deleteArtifact(id: number): void {
     this.db.query("DELETE FROM artifacts WHERE id = ?").run(id);
+  }
+
+  // ---- notification channels --------------------------------------------
+
+  listChannels(): Channel[] {
+    return (this.db.query("SELECT * FROM channels ORDER BY id").all() as ChannelRow[]).map((r) => this.toChannel(r));
+  }
+
+  getChannel(id: number): Channel | null {
+    const row = this.db.query("SELECT * FROM channels WHERE id = ?").get(id) as ChannelRow | null;
+    return row ? this.toChannel(row) : null;
+  }
+
+  createChannel(input: ChannelInput): Channel {
+    const parsed = channelInputSchema.parse(input);
+    const ts = now();
+    const { lastInsertRowid } = this.db
+      .query(
+        `INSERT INTO channels (name, kind, config_enc, events, targets, enabled, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        parsed.name,
+        parsed.config.kind,
+        this.box.encrypt(JSON.stringify(parsed.config)),
+        JSON.stringify(parsed.events),
+        parsed.targets ? JSON.stringify(parsed.targets) : null,
+        parsed.enabled ? 1 : 0,
+        ts,
+        ts,
+      );
+    return this.getChannel(Number(lastInsertRowid))!;
+  }
+
+  updateChannel(id: number, patch: Partial<ChannelInput>): Channel {
+    const existing = this.getChannel(id);
+    if (!existing) throw new Error(`no channel with id ${id}`);
+    const merged = channelInputSchema.parse({ ...existing, ...patch });
+    this.db
+      .query(
+        `UPDATE channels SET name = ?, kind = ?, config_enc = ?, events = ?, targets = ?, enabled = ?, updated_at = ?
+         WHERE id = ?`,
+      )
+      .run(
+        merged.name,
+        merged.config.kind,
+        this.box.encrypt(JSON.stringify(merged.config)),
+        JSON.stringify(merged.events),
+        merged.targets ? JSON.stringify(merged.targets) : null,
+        merged.enabled ? 1 : 0,
+        now(),
+        id,
+      );
+    return this.getChannel(id)!;
+  }
+
+  deleteChannel(id: number): void {
+    this.db.query("DELETE FROM channels WHERE id = ?").run(id);
+  }
+
+  /**
+   * Records the outcome of the last delivery so the UI can explain silence.
+   * A failure leaves the last success timestamp alone — "delivered 3 days ago,
+   * failing since" is the useful reading.
+   */
+  recordChannelResult(id: number, error: string | null): void {
+    this.db
+      .query("UPDATE channels SET last_sent_at = COALESCE(?, last_sent_at), last_error = ? WHERE id = ?")
+      .run(error ? null : now(), error, id);
+  }
+
+  /** Strips the webhook token. Everything leaving the process goes through here. */
+  toSafeChannel(channel: Channel, readOnly = false): SafeChannel {
+    return { ...channel, config: maskChannelConfig(channel.config), readOnly };
+  }
+
+  private toChannel(row: ChannelRow): Channel {
+    return {
+      id: row.id,
+      name: row.name,
+      kind: row.kind as ChannelKind,
+      config: channelConfigSchema.parse(JSON.parse(this.box.decrypt(row.config_enc))),
+      events: JSON.parse(row.events) as NotifyEventKind[],
+      targets: row.targets ? (JSON.parse(row.targets) as string[]) : null,
+      enabled: row.enabled === 1,
+      lastSentAt: row.last_sent_at,
+      lastError: row.last_error,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    };
   }
 
   private toTarget(row: TargetRow): Target {

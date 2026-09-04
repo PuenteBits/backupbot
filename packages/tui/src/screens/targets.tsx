@@ -14,6 +14,7 @@ export const TARGET_HINTS: Hint[] = [
   { key: "t", label: "test" },
   { key: "space", label: "enable" },
   { key: "d", label: "delete" },
+  { key: "n", label: "channels" },
   { key: "q", label: "quit" },
 ];
 
@@ -29,6 +30,7 @@ export interface TargetsScreenProps {
   onTest: (target: TargetView) => void;
   onToggle: (target: TargetView) => void;
   onDelete: (target: TargetView) => void;
+  onChannels: () => void;
   onQuit: () => void;
 }
 
@@ -75,6 +77,8 @@ export function TargetsScreen(props: TargetsScreenProps) {
         return current && props.onToggle(current);
       case "d":
         return current && setConfirmDelete(current);
+      case "n":
+        return props.onChannels();
       case "q":
         return props.onQuit();
     }

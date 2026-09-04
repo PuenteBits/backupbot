@@ -170,10 +170,11 @@ setup at all.
 
 | Screen | Keys |
 |---|---|
-| Targets | `↑↓`/`jk` move · `⏎` history · `r` run now · `a` add · `e` edit · `t` test connection · `space` enable/disable · `d` delete · `q` quit |
+| Targets | `↑↓`/`jk` move · `⏎` history · `r` run now · `a` add · `e` edit · `t` test connection · `space` enable/disable · `d` delete · `n` channels · `q` quit |
 | Add/edit | `tab` next field · `←→` change option · `^p` cycle schedule presets · `^g` provider connection guide · `^t` test connection · `^s` save · `esc` cancel |
 | History | `tab` switch pane · `↑↓` move · `⏎` open log / show restore command · `r` run now · `esc` back |
 | Live run | `esc` back · `c` cancel the run |
+| Channels | `↑↓` move · `a` add · `e` edit · `t` send a test message · `space` enable/disable · `d` delete · `esc` back |
 
 `r` streams the running backup's log live over server-sent events, so you watch
 `pg_dump` work through your tables in real time and see the verification verdict
@@ -272,6 +273,45 @@ backupbot restore 42                    # print the exact restore command
 It prints rather than executes: a restore overwrites a live database, and that
 should be a decision you make with the command in front of you.
 
+## Notifications
+
+Every finished run — scheduled, manual or over the API — is reported to any
+channel that subscribed to it. Discord is the only provider so far.
+
+The quickest route is an environment variable, so a deployment reports without
+anyone opening the TUI. In `docker/.env`:
+
+```
+BACKUPBOT_DISCORD_WEBHOOK=https://discord.com/api/webhooks/123456789/…
+BACKUPBOT_NOTIFY_EVENTS=success,failed      # or "failed", or "all"
+```
+
+Get the URL from Discord: Server Settings → Integrations → Webhooks → New
+Webhook → Copy Webhook URL.
+
+`n` in the TUI opens the same list — add, edit, enable, delete, and `^t` posts a
+test message to a webhook before you save it. A channel that comes from the
+environment is listed there too, marked as belonging to `docker/.env` rather
+than editable in place.
+
+Channels added through the CLI or TUI are used as well, and can be scoped to
+particular targets and events:
+
+```bash
+backupbot channel add --kind discord --url https://discord.com/api/webhooks/…
+backupbot channel add --kind discord --url … --events failed --targets shop-production
+backupbot channel test 1                    # posts a "this works" message
+backupbot channels                          # includes the env-configured one
+```
+
+A success posts a green embed with the size, duration and artifact name; a
+failure posts a red one carrying the error. Delivery is retried three times —
+timeouts, 5xx and Discord's own 429 rate limit, whose `retry_after` is
+honoured — and a 4xx gives up at once, because a deleted webhook will not
+recover. **A notification can never fail a backup**: the outcome is recorded on
+the channel and written into the run log, and that is all. `backupbot channels`
+shows the last delivery, so a silent channel can be explained.
+
 ## CLI
 
 Run inside the container (`sudo docker exec backupbot bun run /app/packages/cli/src/index.ts …`)
@@ -291,6 +331,8 @@ runs [<ref>] [--limit N]       recent run history
 artifacts [<ref>]              stored backups
 restore <artifactId>           print the command to restore an artifact
 prune <ref>                    apply the retention policy now
+channels                       list notification channels
+channel add|edit|rm|test       manage notification channels
 ```
 
 ## API
@@ -315,6 +357,12 @@ GET    /api/artifacts?target=
 GET    /api/artifacts/:id/restore-command
 GET    /api/schedule
 GET    /api/stats
+GET    /api/channels                    notification channels, webhook masked
+POST   /api/channels                    add
+PATCH  /api/channels/:id
+DELETE /api/channels/:id
+POST   /api/channels/:id/test           post a test message
+POST   /api/channels/test               test a webhook that isn't saved yet
 ```
 
 ## Security
@@ -329,6 +377,10 @@ GET    /api/stats
 - Every stream captured from a dump tool is scrubbed of the password before it
   reaches a log, the API or the terminal — `pg_dump` echoes connection details
   into its own error output.
+- Webhook URLs are encrypted at rest under the same key as the DSNs, and the
+  token is masked everywhere they leave the process — API, CLI and TUI.
+- Notifications carry the run's error message, which is scrubbed of the
+  password before it is stored or sent.
 - The API binds to `127.0.0.1` unless told otherwise.
 
 Dumps themselves are stored unencrypted, relying on NAS volume permissions.
@@ -354,6 +406,9 @@ path for everything else.
 
 Working end to end: core, engine, scheduler, API, CLI, TUI, Docker image.
 
-Possible next steps: notification channels (the `Notifier` interface is in place
-with a no-op default), per-target schema include/exclude filters, and MongoDB
+Notifications work over the TUI, the CLI, the API and `BACKUPBOT_DISCORD_WEBHOOK`.
+
+Possible next steps: more providers (Slack, plain webhook, email — the
+`ChannelProvider` interface is the seam), reporting runs that a container
+restart interrupted, per-target schema include/exclude filters, and MongoDB
 support.

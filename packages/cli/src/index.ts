@@ -7,14 +7,16 @@ import {
   formatRelative,
   nextRunAt,
   parseDsn,
+  parseNotifyEvents,
   inspectDsn,
   createRedactor,
   retentionSchema,
+  validationMessage,
   type Context,
   type Engine,
   type Target,
 } from "@backupbot/core";
-import { adapterFor, pruneTarget, Runner, startDaemon } from "@backupbot/engine";
+import { adapterFor, envChannels, Notifier, pruneTarget, Runner, startDaemon } from "@backupbot/engine";
 import { apiToken } from "@backupbot/engine";
 
 const USAGE = `backupbot — scheduled database backups
@@ -31,6 +33,8 @@ const USAGE = `backupbot — scheduled database backups
   artifacts [<ref>]              stored backups
   restore <artifactId>           print the command to restore an artifact
   prune <ref>                    apply the retention policy now
+  channels                       list notification channels
+  channel add|edit|rm|test       manage notification channels
 
 add/edit flags:
   --name        display name
@@ -41,6 +45,16 @@ add/edit flags:
   --verify      none | archive | restore, default archive
   --retention   keepLast,daily,weekly,monthly — e.g. 7,7,4,6
   --disabled    add the target without scheduling it
+
+channel flags:
+  --kind        discord (the only provider so far)
+  --url         the webhook URL
+  --name        display name, default "discord"
+  --events      success,failed,cancelled or all — default success,failed
+  --targets     only notify for these target slugs — default every target
+
+  e.g. backupbot channel add --kind discord --url https://discord.com/api/webhooks/…
+       backupbot channel add --kind discord --url … --events failed --targets shop-prod
 `;
 
 const options = {
@@ -52,6 +66,10 @@ const options = {
   tz: { type: "string" },
   verify: { type: "string" },
   retention: { type: "string" },
+  kind: { type: "string" },
+  url: { type: "string" },
+  events: { type: "string" },
+  targets: { type: "string" },
   disabled: { type: "boolean" },
   enabled: { type: "boolean" },
   limit: { type: "string" },
@@ -80,6 +98,8 @@ const commands: Record<string, (ctx: Context) => Promise<void> | void> = {
   artifacts: listArtifacts,
   restore: restoreCommand,
   prune: pruneCommand,
+  channels: listChannels,
+  channel: channelCommand,
 };
 
 const handler = commands[command];
@@ -92,7 +112,7 @@ if (!handler) {
 try {
   await handler(command === "serve" ? (undefined as never) : createContext());
 } catch (err) {
-  console.error(`error: ${(err as Error).message}`);
+  console.error(`error: ${validationMessage(err) ?? (err as Error).message}`);
   process.exit(1);
 }
 
@@ -184,7 +204,7 @@ async function testTarget(ctx: Context) {
 
 async function runTarget(ctx: Context) {
   const target = requireTarget(ctx, rest[0]);
-  const runner = new Runner(ctx);
+  const runner = new Runner(ctx, notifier(ctx));
   const { runId, done } = await runner.start(target, "manual");
   runner.attach(runId, (line) => console.log(`  ${line.text}`));
   const outcome = await done;
@@ -243,6 +263,90 @@ async function pruneCommand(ctx: Context) {
   const target = requireTarget(ctx, rest[0]);
   const result = await pruneTarget(ctx.store, target, (line) => console.log(line));
   console.log(`kept ${result.kept}, deleted ${result.deleted.length}, freed ${formatBytes(result.freedBytes)}`);
+}
+
+// ---- notification channels ------------------------------------------------
+
+function notifier(ctx: Context): Notifier {
+  return new Notifier(ctx, envChannels());
+}
+
+function listChannels(ctx: Context) {
+  const channels = notifier(ctx).channels();
+  if (flags.json) {
+    return void console.log(JSON.stringify(channels.map((ch) => ctx.store.toSafeChannel(ch, ch.id <= 0)), null, 2));
+  }
+  if (!channels.length) {
+    return void console.log('no channels yet — add one with "backupbot channel add --kind discord --url ..."');
+  }
+  printTable(
+    channels.map((ch) => ({
+      id: ch.id > 0 ? String(ch.id) : "env",
+      name: ch.name,
+      kind: ch.kind,
+      events: ch.events.map((e) => e.replace("run.", "")).join(","),
+      targets: ch.targets?.join(",") ?? "all",
+      state: ch.enabled ? "enabled" : "disabled",
+      last: ch.lastError ? `error: ${ch.lastError.slice(0, 50)}` : ch.lastSentAt ? formatRelative(ch.lastSentAt) : "—",
+    })),
+    ["id", "name", "kind", "events", "targets", "state", "last"],
+  );
+}
+
+function channelFieldsFromFlags() {
+  const fields: Record<string, unknown> = {};
+  if (flags.name) fields.name = flags.name;
+  if (flags.url) fields.config = { kind: flags.kind ?? "discord", webhookUrl: flags.url };
+  if (flags.events) fields.events = parseNotifyEvents(flags.events);
+  if (flags.targets) fields.targets = flags.targets.split(",").map((s) => s.trim()).filter(Boolean);
+  if (flags.disabled) fields.enabled = false;
+  if (flags.enabled) fields.enabled = true;
+  return fields;
+}
+
+function requireChannel(ctx: Context, ref: string | undefined) {
+  const channel = ref && /^\d+$/.test(ref) ? ctx.store.getChannel(Number(ref)) : null;
+  if (!channel) throw new Error(`this command needs a channel id — see "backupbot channels"`);
+  return channel;
+}
+
+async function channelCommand(ctx: Context) {
+  const [action, ref] = rest;
+  switch (action) {
+    case "add": {
+      if (!flags.url) throw new Error("--url is required");
+      const channel = ctx.store.createChannel({
+        name: flags.name ?? (flags.kind ?? "discord"),
+        ...channelFieldsFromFlags(),
+      } as Parameters<typeof ctx.store.createChannel>[0]);
+      console.log(`added channel ${channel.id} "${channel.name}" (${channel.kind})`);
+      console.log(`  events   ${channel.events.join(", ")}`);
+      console.log(`  targets  ${channel.targets?.join(", ") ?? "all"}`);
+      console.log(`  test it with "backupbot channel test ${channel.id}"`);
+      return;
+    }
+    case "edit": {
+      const existing = requireChannel(ctx, ref);
+      const updated = ctx.store.updateChannel(existing.id, channelFieldsFromFlags());
+      console.log(`updated channel ${updated.id} "${updated.name}"`);
+      return;
+    }
+    case "rm": {
+      const existing = requireChannel(ctx, ref);
+      ctx.store.deleteChannel(existing.id);
+      console.log(`removed channel ${existing.id} "${existing.name}"`);
+      return;
+    }
+    case "test": {
+      const existing = requireChannel(ctx, ref);
+      const result = await notifier(ctx).deliver(existing, { kind: "test" });
+      if (!result.ok) throw new Error(result.error ?? "delivery failed");
+      console.log(`sent a test message to "${existing.name}"`);
+      return;
+    }
+    default:
+      throw new Error(`unknown channel command "${action ?? ""}" — expected add, edit, rm or test`);
+  }
 }
 
 function printTable(rows: Record<string, string>[], columns: string[]) {

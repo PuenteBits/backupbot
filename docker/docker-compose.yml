@@ -15,6 +15,10 @@ services:
       # Uncomment to enable opt-in restore verification. This grants the
       # container root-equivalent control of the host Docker daemon.
       # BACKUPBOT_ALLOW_DOCKER: "1"
+      # Optional: report every backup result to a Discord webhook. Set both in
+      # docker/.env — empty values are ignored.
+      BACKUPBOT_DISCORD_WEBHOOK: ${BACKUPBOT_DISCORD_WEBHOOK:-}
+      BACKUPBOT_NOTIFY_EVENTS: ${BACKUPBOT_NOTIFY_EVENTS:-success,failed}
     ports:
       - "127.0.0.1:7817:7817"
     volumes:

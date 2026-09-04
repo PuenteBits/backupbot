@@ -100,6 +100,59 @@ export function Panel({
   );
 }
 
+export type FieldKind = "text" | "choice" | "toggle";
+
+export interface FieldSpec<K extends string> {
+  key: K;
+  label: string;
+  kind: FieldKind;
+  hint?: string;
+  choices?: readonly string[];
+  placeholder?: string;
+}
+
+/** One labelled row of a form: a text input, a cycled choice, or a yes/no. */
+export function Field<K extends string>({
+  spec,
+  value,
+  focused,
+  onInput,
+}: {
+  spec: FieldSpec<K>;
+  value: string | boolean;
+  focused: boolean;
+  onInput: (value: string) => void;
+}) {
+  return (
+    <box flexDirection="row" height={1}>
+      <text>
+        <span fg={focused ? theme.accent : theme.muted}>{focused ? "▸ " : "  "}</span>
+        <span fg={focused ? theme.text : theme.muted}>{spec.label.padEnd(11)}</span>
+      </text>
+      {spec.kind === "text" ? (
+        <input
+          value={value as string}
+          placeholder={spec.placeholder}
+          focused={focused}
+          onInput={onInput}
+          flexGrow={1}
+          maxWidth={70}
+          backgroundColor={focused ? theme.selected : undefined}
+          textColor={theme.text}
+        />
+      ) : (
+        <text>
+          <span fg={theme.text}>{spec.kind === "toggle" ? (value ? "yes" : "no") : String(value)}</span>
+          <span fg={theme.muted}>{focused ? "   ←→ to change" : ""}</span>
+        </text>
+      )}
+      <text>
+        <span fg={theme.muted}>{focused && spec.hint ? `  ${spec.hint}` : ""}</span>
+      </text>
+    </box>
+  );
+}
+
 export function Empty({ text }: { text: string }) {
   return (
     <text>

@@ -5,12 +5,15 @@ import {
   createRedactor,
   inspectDsn,
   parseDsn,
+  type Artifact,
   type Context,
+  type NotifyEventKind,
   type Run,
   type RunTrigger,
   type Target,
 } from "@backupbot/core";
 import { adapterFor } from "./adapters";
+import type { Notifier } from "./notify";
 import { pruneTarget } from "./retention";
 import { RunLog, type LogLine } from "./runlog";
 import type { JobContext, VerifyReport } from "./types";
@@ -18,6 +21,7 @@ import type { JobContext, VerifyReport } from "./types";
 export interface RunOutcome {
   run: Run;
   artifactPath?: string;
+  artifact?: Artifact;
   verify?: VerifyReport;
   error?: string;
 }
@@ -41,7 +45,10 @@ export class TargetBusyError extends Error {
 export class Runner {
   private readonly active = new Map<number, ActiveRun>();
 
-  constructor(private readonly ctx: Context) {}
+  constructor(
+    private readonly ctx: Context,
+    private readonly notifier?: Notifier,
+  ) {}
 
   activeRuns(): ActiveRun[] {
     return [...this.active.values()];
@@ -105,9 +112,13 @@ export class Runner {
     // The dump lands on a .partial path so an interrupted run can never be
     // mistaken for a usable backup, and is renamed only once verified.
     let partialPath: string | undefined;
+    let outcome: RunOutcome | undefined;
+    // Hoisted so the catch below can scrub too, and seeded with the raw DSN so
+    // even a failure before it parses cannot leak the password.
+    let redact = createRedactor([target.dsn]);
     try {
       const dsn = parseDsn(target.dsn);
-      const redact = createRedactor([target.dsn, dsn.password, encodeURIComponent(dsn.password)]);
+      redact = createRedactor([target.dsn, dsn.password, encodeURIComponent(dsn.password)]);
       const write = (line: string) => log.write(redact(line));
 
       write(`starting ${trigger} backup of "${target.name}" (${target.engine})`);
@@ -135,7 +146,7 @@ export class Runner {
       partialPath = undefined;
 
       const sha256 = await hashFile(finalPath);
-      store.addArtifact({
+      const artifact = store.addArtifact({
         runId: run.id,
         targetId: target.id,
         path: finalPath,
@@ -150,17 +161,44 @@ export class Runner {
 
       const finished = store.finishRun(run.id, "success", { bytes: sizeBytes });
       write("backup complete");
-      return { run: finished, artifactPath: finalPath, verify };
+      outcome = { run: finished, artifactPath: finalPath, artifact, verify };
+      return outcome;
     } catch (err) {
       const cancelled = abort.signal.aborted;
-      const message = cancelled ? "cancelled" : ((err as Error).message ?? String(err));
+      const message = cancelled ? "cancelled" : redact((err as Error).message ?? String(err));
       if (partialPath) await unlink(partialPath).catch(() => {});
       log.write(`FAILED: ${message}`);
       const finished = store.finishRun(run.id, cancelled ? "cancelled" : "failed", { error: message });
-      return { run: finished, error: message };
+      outcome = { run: finished, error: message };
+      return outcome;
     } finally {
       this.active.delete(target.id);
+      if (outcome) await this.announce(target, outcome, (line) => log.write(line));
       await log.close();
+    }
+  }
+
+  /**
+   * Reports the finished run to every subscribed channel. Bounded and
+   * swallowing: notification trouble is logged against the run, never raised.
+   */
+  private async announce(target: Target, outcome: RunOutcome, write: (line: string) => void): Promise<void> {
+    if (!this.notifier) return;
+    const kind = `run.${outcome.run.status}` as NotifyEventKind;
+    try {
+      const results = await this.notifier.dispatch({
+        kind,
+        target: this.ctx.store.toSafe(target),
+        run: outcome.run,
+        artifact: outcome.artifact,
+        verify: outcome.verify,
+        error: outcome.error,
+      });
+      for (const result of results) {
+        write(result.ok ? `notified ${result.channelName}` : `notify ${result.channelName} failed: ${result.error}`);
+      }
+    } catch (err) {
+      write(`notify failed: ${(err as Error).message}`);
     }
   }
 

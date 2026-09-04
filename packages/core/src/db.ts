@@ -50,6 +50,22 @@ const MIGRATIONS: string[] = [
      key   TEXT PRIMARY KEY,
      value TEXT NOT NULL
    );`,
+
+  `CREATE TABLE channels (
+     id           INTEGER PRIMARY KEY AUTOINCREMENT,
+     name         TEXT    NOT NULL,
+     kind         TEXT    NOT NULL,
+     -- The whole config blob is encrypted: a webhook URL is a credential.
+     config_enc   TEXT    NOT NULL,
+     events       TEXT    NOT NULL,
+     -- JSON array of target slugs, or NULL for "every target".
+     targets      TEXT,
+     enabled      INTEGER NOT NULL DEFAULT 1,
+     last_sent_at TEXT,
+     last_error   TEXT,
+     created_at   TEXT    NOT NULL,
+     updated_at   TEXT    NOT NULL
+   );`,
 ];
 
 export function openDatabase(dbFile: string): Database {

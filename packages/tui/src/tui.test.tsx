@@ -4,12 +4,14 @@ import { tmpdir } from "node:os";
 import { testRender } from "@opentui/react/test-utils";
 import type { TestRendererSetup } from "@opentui/core/testing";
 import { createContext, type Context } from "@backupbot/core";
-import { createApi, Runner, Scheduler } from "@backupbot/engine";
+import { createApi, envChannels, Notifier, Runner, Scheduler } from "@backupbot/engine";
 import { Api } from "./api";
 import { App } from "./app";
 
 const TOKEN = "test-token";
 const MYSQL_DSN = "mysql://root:rootpw@127.0.0.1:53306/shop";
+const DISCORD_WEBHOOK = "https://discord.com/api/webhooks/1234567890/tOpS3cretWebhookToken";
+const ENV_WEBHOOK = "https://discord.com/api/webhooks/55555/envOnlyToken";
 
 /**
  * Two tests below drive a real dump against a real server. Everything else runs
@@ -58,9 +60,18 @@ beforeAll(() => {
     timezone: "Europe/Madrid",
   });
 
+  ctx.store.createChannel({
+    name: "ops",
+    config: { kind: "discord", webhookUrl: DISCORD_WEBHOOK },
+    events: ["run.failed"],
+  });
+
   const runner = new Runner(ctx);
   const scheduler = new Scheduler(ctx, runner, () => {});
-  const app = createApi({ ctx, runner, scheduler, token: TOKEN });
+  // An engine deployed with BACKUPBOT_DISCORD_WEBHOOK set: that channel is
+  // listed alongside the stored ones, but cannot be edited from the TUI.
+  const notifier = new Notifier(ctx, envChannels({ BACKUPBOT_DISCORD_WEBHOOK: ENV_WEBHOOK }));
+  const app = createApi({ ctx, runner, scheduler, notifier, token: TOKEN });
   server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: app.fetch, idleTimeout: 0 });
   api = new Api(`http://127.0.0.1:${server.port}`, TOKEN);
 });
@@ -261,6 +272,127 @@ describe("TUI", () => {
 
     mockInput.pressEscape();
     await until(setup, (frame) => frame.includes("targets (1)"));
+  });
+
+  test("n opens the channels screen, with the webhook token masked", async () => {
+    const setup = await mount();
+    const { mockInput, captureCharFrame } = setup;
+
+    expect(captureCharFrame()).toContain("n channels");
+    mockInput.pressKey("n");
+    await until(setup, (frame) => frame.includes("notification channels"));
+
+    const frame = captureCharFrame();
+    expect(frame).toContain("ops");
+    expect(frame).toContain("discord (env)");
+    expect(frame).toContain("failed");
+    expect(frame).toContain("all targets");
+    expect(frame).not.toContain("tOpS3cretWebhookToken");
+    expect(frame).not.toContain("envOnlyToken");
+    // The env channel sorts first, so the detail panel is showing that one.
+    expect(frame).toContain("/55555/****");
+    expect(frame).toContain("BACKUPBOT_DISCORD_WEBHOOK");
+
+    mockInput.pressEscape();
+    await until(setup, (frame) => frame.includes("targets (1)"));
+  });
+
+  test("a opens the channel form and esc returns to the list", async () => {
+    const setup = await mount();
+    const { mockInput, captureCharFrame } = setup;
+
+    mockInput.pressKey("n");
+    await until(setup, (frame) => frame.includes("notification channels"));
+    mockInput.pressKey("a");
+    await until(setup, (frame) => frame.includes("add channel"));
+
+    const form = captureCharFrame();
+    expect(form).toContain("Webhook");
+    expect(form).toContain("On failure");
+    expect(form).toContain("^t send a test message");
+
+    mockInput.pressEscape();
+    await until(setup, (frame) => frame.includes("channels ("));
+  });
+
+  test("the form refuses a webhook that is not a discord URL", async () => {
+    const setup = await mount();
+    const { mockInput, captureCharFrame } = setup;
+    const before = ctx.store.listChannels().length;
+
+    mockInput.pressKey("n");
+    await until(setup, (frame) => frame.includes("notification channels"));
+    mockInput.pressKey("a");
+    await until(setup, (frame) => frame.includes("add channel"));
+    mockInput.pressTab(); // Name -> Webhook
+    await until(setup, (frame) => frame.includes("▸ Webhook"));
+    await mockInput.typeText("https://example.com/hook");
+    await settle(setup);
+    mockInput.pressKey("s", { ctrl: true });
+    await settle(setup);
+
+    // Rejected client-side: still on the form, and nothing was stored.
+    await until(setup, (frame) => frame.includes("webhookUrl"), 4_000);
+    expect(captureCharFrame()).toContain("add channel");
+    expect(ctx.store.listChannels()).toHaveLength(before);
+  }, 60_000);
+
+  test("^s saves a new channel and it appears in the list", async () => {
+    const setup = await mount();
+    const { mockInput } = setup;
+
+    mockInput.pressKey("n");
+    await until(setup, (frame) => frame.includes("notification channels"));
+    mockInput.pressKey("a");
+    await until(setup, (frame) => frame.includes("add channel"));
+    mockInput.pressTab(); // Name -> Webhook, keeping the default name
+    await until(setup, (frame) => frame.includes("▸ Webhook"));
+    await mockInput.typeText("https://discord.com/api/webhooks/222/anotherToken");
+    await settle(setup);
+    mockInput.pressKey("s", { ctrl: true });
+
+    await until(setup, (frame) => frame.includes("channels (3)"));
+    const stored = ctx.store.listChannels().find((c) => c.name === "discord");
+    expect(stored).toBeDefined();
+    expect(stored!.events).toEqual(["run.success", "run.failed"]);
+    expect(stored!.targets).toBeNull();
+    // Stored decrypted, shown masked.
+    expect(stored!.config.kind === "discord" && stored!.config.webhookUrl).toContain("anotherToken");
+    expect(setup.captureCharFrame()).not.toContain("anotherToken");
+  }, 60_000);
+
+  test("the env-configured channel cannot be edited or deleted from here", async () => {
+    const setup = await mount();
+    const { mockInput, captureCharFrame } = setup;
+
+    mockInput.pressKey("n");
+    await until(setup, (frame) => frame.includes("notification channels"));
+    // The env channel is the first row, so it is already selected.
+    mockInput.pressKey("e");
+    await until(setup, (frame) => frame.includes("change it in docker/.env"));
+    expect(captureCharFrame()).toContain("channels (");
+
+    mockInput.pressKey("d");
+    await settle(setup);
+    expect(captureCharFrame()).not.toContain("delete channel");
+  });
+
+  test("d asks before deleting a channel and n keeps it", async () => {
+    const setup = await mount();
+    const { mockInput, captureCharFrame } = setup;
+
+    mockInput.pressKey("n");
+    await until(setup, (frame) => frame.includes("notification channels"));
+    mockInput.pressArrow("down"); // past the env channel, onto "ops"
+    await settle(setup);
+    mockInput.pressKey("d");
+    await until(setup, (frame) => frame.includes("delete channel"));
+    expect(captureCharFrame()).toContain('Delete "ops"?');
+    expect(captureCharFrame()).toContain("Backups keep running");
+
+    mockInput.pressKey("n");
+    await until(setup, (frame) => frame.includes("channels ("));
+    expect(ctx.store.listChannels().some((c) => c.name === "ops")).toBe(true);
   });
 
   test.skipIf(!MYSQL_UP)("r runs a real backup and streams the log to completion", async () => {

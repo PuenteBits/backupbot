@@ -12,7 +12,7 @@ import {
   type VerifyMode,
 } from "@backupbot/core";
 import type { ConnectionCheck, TargetPayload, TargetView } from "../api";
-import { Panel, type Hint } from "../components/ui";
+import { Field, Panel, type FieldSpec, type Hint } from "../components/ui";
 import { theme } from "../theme";
 
 export const FORM_HINTS: Hint[] = [
@@ -24,17 +24,6 @@ export const FORM_HINTS: Hint[] = [
   { key: "^s", label: "save" },
   { key: "esc", label: "cancel" },
 ];
-
-type FieldKind = "text" | "choice" | "toggle";
-
-interface FieldSpec {
-  key: keyof FormState;
-  label: string;
-  kind: FieldKind;
-  hint?: string;
-  choices?: readonly string[];
-  placeholder?: string;
-}
 
 export interface FormState {
   name: string;
@@ -113,7 +102,7 @@ export function TargetForm(props: TargetFormProps) {
   // -1 is closed; otherwise an index into PROVIDER_GUIDES.
   const [guideIndex, setGuideIndex] = useState(-1);
 
-  const fields: FieldSpec[] = useMemo(
+  const fields: FieldSpec<keyof FormState>[] = useMemo(
     () => [
       { key: "name", label: "Name", kind: "text", hint: "shown in the list; also becomes the folder name" },
       {
@@ -205,47 +194,6 @@ export function TargetForm(props: TargetFormProps) {
       ) : (
         <ConnectionPanel check={props.check} testing={props.testing} />
       )}
-    </box>
-  );
-}
-
-function Field({
-  spec,
-  value,
-  focused,
-  onInput,
-}: {
-  spec: FieldSpec;
-  value: string | boolean;
-  focused: boolean;
-  onInput: (value: string) => void;
-}) {
-  return (
-    <box flexDirection="row" height={1}>
-      <text>
-        <span fg={focused ? theme.accent : theme.muted}>{focused ? "▸ " : "  "}</span>
-        <span fg={focused ? theme.text : theme.muted}>{spec.label.padEnd(11)}</span>
-      </text>
-      {spec.kind === "text" ? (
-        <input
-          value={value as string}
-          placeholder={spec.placeholder}
-          focused={focused}
-          onInput={onInput}
-          flexGrow={1}
-          maxWidth={70}
-          backgroundColor={focused ? theme.selected : undefined}
-          textColor={theme.text}
-        />
-      ) : (
-        <text>
-          <span fg={theme.text}>{spec.kind === "toggle" ? (value ? "yes" : "no") : String(value)}</span>
-          <span fg={theme.muted}>{focused ? "   ←→ to change" : ""}</span>
-        </text>
-      )}
-      <text>
-        <span fg={theme.muted}>{focused && spec.hint ? `  ${spec.hint}` : ""}</span>
-      </text>
     </box>
   );
 }

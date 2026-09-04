@@ -1,4 +1,14 @@
-import type { Artifact, Engine, Retention, Run, SafeTarget, VerifyMode } from "@backupbot/core";
+import type {
+  Artifact,
+  ChannelConfig,
+  ChannelInput,
+  Engine,
+  Retention,
+  Run,
+  SafeChannel,
+  SafeTarget,
+  VerifyMode,
+} from "@backupbot/core";
 import type { DsnWarning } from "@backupbot/core";
 
 export interface TargetView extends SafeTarget {
@@ -35,6 +45,16 @@ export interface TargetPayload {
   retention: Retention;
   verify: VerifyMode;
   enabled: boolean;
+}
+
+export type ChannelView = SafeChannel;
+
+/** What a channel test reports back. A failure arrives as an ApiError instead. */
+export interface DeliveryResult {
+  channelId: number;
+  channelName: string;
+  ok: boolean;
+  error?: string;
 }
 
 export interface LogLine {
@@ -105,6 +125,22 @@ export class Api {
   artifacts = (ref?: string, limit = 100) =>
     this.request<Artifact[]>(`/api/artifacts?limit=${limit}${ref ? `&target=${ref}` : ""}`);
   restoreCommand = (id: number) => this.request<{ command: string }>(`/api/artifacts/${id}/restore-command`);
+
+  channels = () => this.request<ChannelView[]>("/api/channels");
+
+  createChannel = (payload: ChannelInput) =>
+    this.request<ChannelView>("/api/channels", { method: "POST", body: JSON.stringify(payload) });
+
+  updateChannel = (id: number, payload: Partial<ChannelInput>) =>
+    this.request<ChannelView>(`/api/channels/${id}`, { method: "PATCH", body: JSON.stringify(payload) });
+
+  deleteChannel = (id: number) => this.request<{ ok: true }>(`/api/channels/${id}`, { method: "DELETE" });
+
+  testChannel = (id: number) => this.request<DeliveryResult>(`/api/channels/${id}/test`, { method: "POST" });
+
+  /** Probes a webhook the user is still typing, before it is saved. */
+  testChannelConfig = (config: ChannelConfig) =>
+    this.request<DeliveryResult>("/api/channels/test", { method: "POST", body: JSON.stringify({ config }) });
 
   /** Historical log of a run that has already finished. */
   runLog = (id: number) => this.request<{ live: false; lines: string[] }>(`/api/runs/${id}/log`);
